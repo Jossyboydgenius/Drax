@@ -1,0 +1,18 @@
+[profile.default]
+remappings = [
+  "@chainlink/contracts/=lib/chainlink/contracts/",
+  "@uniswap/v3-core/=lib/v3-core/",
+  "@uniswap/v3-periphery/=lib/v3-periphery/",
+  "@openzeppelin/=lib/openzeppelin-contracts/"
+]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+
+[rpc_endpoints]
+localchain = "${LOCALCHAIN_URL}"
+basechain = "${BASE_URL}"
+
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-require-imports */
 
-import { Client, type Signer } from '@xmtp/node-sdk';
+import { Client, type Signer } from '@xmtp/xmtp-js';
 import { fromString, toString } from "uint8arrays";
 import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";

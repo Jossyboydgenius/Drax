@@ -12,7 +12,8 @@ import {
   Leaf,
   Vote,
   Sparkles,
-  Gamepad2Icon
+  Gamepad2Icon,
+  Zap
 } from 'lucide-react';
 
 interface NavItem {
@@ -72,6 +73,12 @@ export function ResponsiveNavigation({
       href: '/vote',
       icon: <Vote size={20} />,
       requiresWallet: false,
+    },
+    {
+      label: 'Advanced',
+      href: '/advanced',
+      icon: <Zap size={20} />,
+      requiresWallet: true,
     },
     {
       label: 'Lite',

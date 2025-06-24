@@ -6,17 +6,27 @@ import { OnchainKitProvider } from "@coinbase/onchainkit"
 // import { base } from "wagmi/chains"
 import { useCustomTheme, ThemeProviderCustom } from "@/lib/theme-context"
 import { http, createConfig, WagmiProvider } from 'wagmi'
-import { baseSepolia } from 'wagmi/chains'
+import { baseSepolia, base } from 'wagmi/chains'
+import { coinbaseWallet } from 'wagmi/connectors'
 import { Toaster } from '@/components/ui/toaster';
 
 const BASE_API_KEY = process.env.COINBASE_TOKEN
 const PROJECT_ID = process.env.NEXT_PUBLIC_PROJECT_ID || 'YOUR_PROJECT_ID'
 
+// Add Coinbase Smart Wallet connector
+export const cbWalletConnector = coinbaseWallet({
+  appName: "DeGen Smart Wallet",
+  preference: "smartWalletOnly", // This enables Smart Wallet mode
+});
+
 export const config = createConfig({
-  chains: [baseSepolia,],
+  chains: [baseSepolia, base],
+  // turn off injected provider discovery for Smart Wallet
+  multiInjectedProviderDiscovery: false,
+  connectors: [cbWalletConnector],
   transports: {
     [baseSepolia.id]: http(),
-    // [sepolia.id]: http(),
+    [base.id]: http(),
   },
 })
 

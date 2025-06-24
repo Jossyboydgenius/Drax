@@ -14,12 +14,16 @@ import {
   Cpu, 
   Check,
   Lock,
-  Shield
+  Shield,
+  Wallet,
+  DollarSign
 } from "lucide-react";
 import { BalanceCard } from "./balance-card";
 import { QuickActions } from "./quick-actions";
 import { LiveUpdates } from "./live-updates";
 import { TokenSwap } from "./token-swap";
+import { SmartWalletConnection } from "./smart-wallet-connection";
+import { X402Interface } from "./x402-interface";
 import { toast } from "@/hooks/use-toast";
 import { 
   Dialog, 
@@ -29,6 +33,7 @@ import {
   DialogFooter,
   DialogDescription
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface DashboardProps {
   onGoToLiteMode: () => void;
@@ -197,6 +202,45 @@ export const Dashboard: React.FC<DashboardProps> = ({ onGoToLiteMode }) => {  //
         <LiveUpdates />
         <TokenSwap />
       </div>
+      
+      {/* Smart Wallet and x402 Integration */}
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold">Advanced Features</h3>
+            <Badge variant="secondary">New</Badge>
+          </div>
+          
+          <Tabs defaultValue="smart-wallet" className="w-full">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="smart-wallet" className="flex items-center gap-2">
+                <Wallet className="h-4 w-4" />
+                Smart Wallet
+              </TabsTrigger>
+              <TabsTrigger value="x402" className="flex items-center gap-2">
+                <DollarSign className="h-4 w-4" />
+                x402 Paid APIs
+              </TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="smart-wallet" className="mt-4">
+              <div className="space-y-4">
+                <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                  <h4 className="font-medium mb-2">Coinbase Smart Wallet</h4>
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Connect with a self-custodial Smart Wallet for enhanced security and gasless transactions.
+                  </p>
+                  <SmartWalletConnection />
+                </div>
+              </div>
+            </TabsContent>
+            
+            <TabsContent value="x402" className="mt-4">
+              <X402Interface />
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
       
       <Card className="gradient-card">
         <CardContent className="p-6">

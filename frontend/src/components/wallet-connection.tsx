@@ -8,10 +8,9 @@ import { Avatar, Address } from "@coinbase/onchainkit/identity"
 import { useAccount, useWriteContract } from "wagmi"
 import { useCustomTheme } from "@/lib/theme-context"
 import { Button } from "@/components/ui/button"
-import { Copy, ExternalLink } from "lucide-react"
+import { Copy, ExternalLink, User } from "lucide-react"
 import { toast } from "sonner"
 import entry, { contractAddress, entryABI } from "../web3/web3"
-import { FaUserCircle } from "react-icons/fa"
 
 export interface WalletConnectionProps {
   className?: string;
@@ -72,7 +71,7 @@ const WalletConnection: React.FC<WalletConnectionProps> = ({ className, buttonLa
   // Custom styled connect button
   const CustomConnectButton = () => (
     <Button variant="default" className={`${className} flex items-center gap-2`}>
-      <FaUserCircle size={16} />
+      <User size={16} />
       {buttonLabel}
     </Button>
   )

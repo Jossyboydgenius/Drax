@@ -1,0 +1,2171 @@
+
+// Mock the Across SDK
+const mockCreateAcrossClient = jest.fn();
+jest.mock("@across-protocol/app-sdk", () => ({
+  createAcrossClient: mockCreateAcrossClient,
+}));
+
+// Default implementation for the createAcrossClient mock
+const defaultClientImplementation = () => ({
+  getSupportedChains: jest.fn().mockResolvedValue([
+    {
+      chainId: 1, // Ethereum
+      name: "Ethereum",
+      network: "mainnet",
+      inputTokens: [
+        {
+          symbol: "ETH",
+          address: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+          decimals: 18,
+        },
+        {
+          symbol: "USDC",
+          address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          decimals: 6,
+        },
+      ],
+    },
+    {
+      chainId: 10, // Optimism
+      name: "Optimism",
+      network: "optimism",
+      inputTokens: [
+        {
+          symbol: "ETH",
+          address: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+          decimals: 18,
+        },
+      ],
+    },
+  ]),
+  getAvailableRoutes: jest.fn().mockResolvedValue([
+    {
+      isNative: true,
+      originToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    },
+    {
+      isNative: false,
+      originToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    },
+  ]),
+  getQuote: jest.fn().mockResolvedValue({
+    deposit: {
+      inputAmount: BigInt("1000000000000000000"), // 1 ETH
+      outputAmount: BigInt("990000000000000000"), // 0.99 ETH (1% difference)
+      spokePoolAddress: "0x1234567890123456789012345678901234567890",
+    },
+    limits: {
+      minDeposit: BigInt("100000000000000000"), // 0.1 ETH
+      maxDeposit: BigInt("10000000000000000000"), // 10 ETH
+    },
+  }),
+  simulateDepositTx: jest.fn().mockResolvedValue({
+    request: {
+      address: "0x1234567890123456789012345678901234567890",
+      abi: [],
+      functionName: "deposit",
+      args: [],
+    },
+  }),
+  waitForDepositTx: jest.fn().mockResolvedValue({
+    depositId: "123456",
+  }),
+});
+
+// Set the default implementation
+mockCreateAcrossClient.mockImplementation(() => {
+  const client = defaultClientImplementation();
+  // Add the chains property to match what the code expects
+  return {
+    ...client,
+    chains: [
+      {
+        id: 1,
+        name: "Ethereum",
+        network: "mainnet",
+      },
+      {
+        id: 10,
+        name: "Optimism",
+        network: "optimism",
+      },
+    ],
+  };
+});
+
+// Mock the isTestnet function
+jest.mock("./utils", () => ({
+  isAcrossSupportedTestnet: jest.fn().mockReturnValue(false),
+}));
+
+describe("Across Action Provider", () => {
+  const MOCK_PRIVATE_KEY = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+  const MOCK_INPUT_TOKEN_SYMBOL = "ETH";
+  const MOCK_AMOUNT = "1.0";
+  const MOCK_DESTINATION_CHAIN_ID = "10"; // Optimism
+  const MOCK_RECIPIENT = "0x9876543210987654321098765432109876543210";
+  const MOCK_MAX_SLIPPAGE = 2.0;
+
+  let mockWallet: jest.Mocked<EvmWalletProvider>;
+  let actionProvider: ReturnType<typeof acrossActionProvider>;
+  let mockPublicClient: PublicClient;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Reset to default implementation
+    mockCreateAcrossClient.mockImplementation(() => {
+      const client = defaultClientImplementation();
+      // Add the chains property to match what the code expects
+      return {
+        ...client,
+        chains: [
+          {
+            id: 1,
+            name: "Ethereum",
+            network: "mainnet",
+          },
+          {
+            id: 10,
+            name: "Optimism",
+            network: "optimism",
+          },
+        ],
+      };
+    });
+
+    mockPublicClient = {
+      getBalance: jest.fn().mockResolvedValue(BigInt("2000000000000000000")), // 2 ETH
+      readContract: jest.fn().mockResolvedValue(BigInt("2000000000000000000")), // 2 ETH or 2 USDC
+      waitForTransactionReceipt: jest.fn().mockResolvedValue({}),
+    } as unknown as PublicClient;
+
+    (createPublicClient as jest.Mock).mockReturnValue(mockPublicClient);
+
+    mockWallet = {
+      getAddress: jest.fn().mockReturnValue(MOCK_RECIPIENT),
+      sendTransaction: jest.fn().mockResolvedValue("0xmocktxhash"),
+      waitForTransactionReceipt: jest.fn(),
+      getNetwork: jest.fn().mockReturnValue({
+        chainId: "1", // Ethereum mainnet
+        networkId: "ethereum-mainnet",
+        protocolFamily: "evm",
+      }),
+      getBalance: jest.fn().mockResolvedValue(BigInt("2000000000000000000")), // 2 ETH
+      readContract: jest.fn().mockResolvedValue(BigInt("2000000000000000000")), // 2 ETH/USDC
+    } as unknown as jest.Mocked<EvmWalletProvider>;
+
+    actionProvider = acrossActionProvider({
+      privateKey: MOCK_PRIVATE_KEY,
+    });
+  });
+
+  describe("bridgeToken", () => {
+    it("should successfully bridge native ETH", async () => {
+      const args = {
+        inputTokenSymbol: MOCK_INPUT_TOKEN_SYMBOL,
+        amount: MOCK_AMOUNT,
+        destinationChainId: MOCK_DESTINATION_CHAIN_ID,
+        recipient: MOCK_RECIPIENT,
+        maxSplippage: MOCK_MAX_SLIPPAGE,
+      };
+
+      const response = await actionProvider.bridgeToken(mockWallet, args);
+
+      // Verify the SDK interactions and response
+      expect(response).toContain("Successfully deposited tokens");
+      expect(response).toContain(`Token: ${MOCK_INPUT_TOKEN_SYMBOL}`);
+      expect(response).toContain("Transaction Hash for deposit: 0xdepositTxHash");
+    });
+
+    it("should successfully bridge ERC20 tokens", async () => {
+      const args = {
+        inputTokenSymbol: "USDC",
+        amount: "100",
+        destinationChainId: MOCK_DESTINATION_CHAIN_ID,
+        recipient: MOCK_RECIPIENT,
+        maxSplippage: MOCK_MAX_SLIPPAGE,
+      };
+
+      // Set up mock for approval and deposit transactions
+      mockWallet.sendTransaction
+        .mockResolvedValueOnce("0xapprovalTxHash")
+        .mockResolvedValueOnce("0xdepositTxHash");
+
+      const response = await actionProvider.bridgeToken(mockWallet, args);
+
+      // Verify the SDK interactions and response
+      expect(response).toContain("Successfully deposited tokens");
+      expect(response).toContain(`Token: ${args.inputTokenSymbol}`);
+      expect(response).toContain("Transaction Hash for approval: 0xapprovalTxHash");
+      expect(response).toContain("Transaction Hash for deposit: 0xdepositTxHash");
+    });
+
+    it("should fail when slippage is too high", async () => {
+      // Override the default mock with high slippage for this test only
+      mockCreateAcrossClient.mockImplementationOnce(() => ({
+        getSupportedChains: jest.fn().mockResolvedValue([
+          {
+            chainId: 1,
+            inputTokens: [
+              {
+                symbol: "ETH",
+                address: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+                decimals: 18,
+              },
+            ],
+          },
+        ]),
+        getAvailableRoutes: jest.fn().mockResolvedValue([
+          {
+            isNative: true,
+            originToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+          },
+        ]),
+        getQuote: jest.fn().mockResolvedValue({
+          deposit: {
+            inputAmount: BigInt("1000000000000000000"), // 1 ETH
+            outputAmount: BigInt("800000000000000000"), // 0.8 ETH (20% difference)
+            spokePoolAddress: "0x1234567890123456789012345678901234567890",
+          },
+          limits: {
+            minDeposit: BigInt("100000000000000000"),
+            maxDeposit: BigInt("10000000000000000000"),
+          },
+        }),
+        simulateDepositTx: jest.fn().mockResolvedValue({
+          request: {
+            address: "0x1234567890123456789012345678901234567890",
+            abi: [],
+            functionName: "deposit",
+            args: [],
+          },
+        }),
+        waitForDepositTx: jest.fn().mockResolvedValue({
+          depositId: "123456",
+        }),
+      }));
+
+      // Set a low max slippage
+      const args = {
+        inputTokenSymbol: MOCK_INPUT_TOKEN_SYMBOL,
+        amount: MOCK_AMOUNT,
+        destinationChainId: MOCK_DESTINATION_CHAIN_ID,
+        recipient: MOCK_RECIPIENT,
+        maxSplippage: 0.5, // Only allow 0.5% slippage
+      };
+
+      const response = await actionProvider.bridgeToken(mockWallet, args);
+
+      // Verify the error response
+      expect(response).toContain("Error with Across SDK");
+      expect(response).toContain("exceeds the maximum allowed slippage of 0.5%");
+    });
+
+    it("should handle errors in bridging", async () => {
+      const error = new Error("Insufficient balance");
+      mockWallet.getBalance.mockRejectedValueOnce(error);
+      mockWallet.sendTransaction.mockRejectedValueOnce(error);
+
+      const args = {
+        inputTokenSymbol: MOCK_INPUT_TOKEN_SYMBOL,
+        amount: MOCK_AMOUNT,
+        destinationChainId: MOCK_DESTINATION_CHAIN_ID,
+        recipient: MOCK_RECIPIENT,
+        maxSplippage: MOCK_MAX_SLIPPAGE,
+      };
+
+      const response = await actionProvider.bridgeToken(mockWallet, args);
+
+      expect(response).toContain("Error with Across SDK");
+      expect(response).toContain(error.message);
+    });
+  });
+
+  describe("checkDepositStatus", () => {
+    beforeEach(() => {
+      global.fetch = jest.fn();
+    });
+
+    it("should successfully check deposit status", async () => {
+      // Mock successful API response
+      const mockApiResponse = {
+        status: "filled",
+        originChainId: 1,
+        destinationChainId: 10,
+        depositTxHash: "0xdepositTxHash",
+        fillTx: "0xfillTxHash",
+      };
+
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockApiResponse,
+      });
+
+      const args = {
+        originChainId: "1",
+        depositId: "123456",
+      };
+
+      const response = await actionProvider.checkDepositStatus(mockWallet, args);
+      const parsedResponse = JSON.parse(response);
+
+      expect(parsedResponse.status).toEqual("filled");
+      expect(parsedResponse.depositTxInfo.txHash).toEqual("0xdepositTxHash");
+      expect(parsedResponse.fillTxInfo.txHash).toEqual("0xfillTxHash");
+    });
+
+    it("should handle API errors", async () => {
+      // Mock API error
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+      });
+
+      const args = {
+        originChainId: "1",
+        depositId: "123456",
+      };
+
+      const response = await actionProvider.checkDepositStatus(mockWallet, args);
+
+      expect(response).toContain("Error checking deposit status");
+      expect(response).toContain("404");
+    });
+
+    it("should handle network errors", async () => {
+      // Mock network error
+      (global.fetch as jest.Mock).mockRejectedValueOnce(new Error("Network error"));
+
+      const args = {
+        originChainId: "1",
+        depositId: "123456",
+      };
+
+      const response = await actionProvider.checkDepositStatus(mockWallet, args);
+
+      expect(response).toContain("Error checking deposit status");
+      expect(response).toContain("Network error");
+    });
+  });
+
+  describe("supportsNetwork", () => {
+    it("should return true for supported networks", () => {
+      const evmNetwork: Network = {
+        protocolFamily: "evm",
+        networkId: "ethereum",
+        chainId: "1",
+      };
+      expect(actionProvider.supportsNetwork(evmNetwork)).toBe(true);
+    });
+
+    it("should return false for unsupported networks", () => {
+      const nonEvmNetwork: Network = {
+        protocolFamily: "solana",
+        networkId: "mainnet",
+      };
+      expect(actionProvider.supportsNetwork(nonEvmNetwork)).toBe(false);
+    });
+  });
+});
+
+
+
+import { z } from "zod";
+import { parseUnits, Hex, createWalletClient, http, formatUnits, encodeFunctionData } from "viem";
+import { ActionProvider } from "../actionProvider";
+import { CHAIN_ID_TO_NETWORK_ID, Network, NETWORK_ID_TO_VIEM_CHAIN, getChain } from "../../network";
+import { CreateAction } from "../actionDecorator";
+import { BridgeTokenSchema, CheckDepositStatusSchema } from "./schemas";
+import { EvmWalletProvider } from "../../wallet-providers";
+import { isAcrossSupportedTestnet } from "./utils";
+import { privateKeyToAccount } from "viem/accounts";
+import { abi as ERC20_ABI } from "../erc20/constants";
+/**
+ * Configuration options for the SafeWalletProvider.
+ */
+export interface AcrossActionProviderConfig {
+  /**
+   * Private key of the wallet provider
+   */
+  privateKey: string;
+}
+
+/**
+ * AcrossActionProvider provides actions for cross-chain bridging via Across Protocol.
+ */
+export class AcrossActionProvider extends ActionProvider<EvmWalletProvider> {
+  #privateKey: string;
+  /**
+   * Constructor for the AcrossActionProvider.
+   *
+   * @param config - The configuration options for the AcrossActionProvider.
+   */
+  constructor(config: AcrossActionProviderConfig) {
+    super("across", []);
+    this.#privateKey = config.privateKey;
+    const account = privateKeyToAccount(this.#privateKey as Hex);
+    if (!account) throw new Error("Invalid private key");
+  }
+
+  /**
+   * Bridges a token from one chain to another using Across Protocol.
+   *
+   * @param walletProvider - The wallet provider to use for the transaction.
+   * @param args - The input arguments for the action.
+   * @returns A message containing the bridge details.
+   */
+  @CreateAction({
+    name: "bridge_token",
+    description: `
+    This tool will bridge tokens from the current chain to another chain using the Across Protocol.
+
+    It takes the following inputs:
+    - destinationChainId: The chain ID of the destination chain (e.g. 8453 for base-mainnet)
+    - inputTokenSymbol: The symbol of the token to bridge (e.g. 'ETH', 'USDC')
+    - amount: The amount of tokens to bridge in whole units (e.g. 1.5 WETH, 10 USDC)
+    - recipient: (Optional) The recipient address on the destination chain (defaults to sender)
+    - maxSplippage: (Optional) The maximum slippage percentage (defaults to 1.5%)
+
+    Important notes:
+    - Origin chain is the currently connected chain of the wallet provider 
+    - Supports cross-chain transfers between EVM-compatible chains for both mainnets and test networks
+    - Testnet deposits are not refunded if not filled on destination chain
+    - Ensure sufficient balance of the input token before bridging
+    - Returns deposit ID that can be used to check the status of the deposit
+    `,
+    schema: BridgeTokenSchema,
+  })
+  async bridgeToken(
+    walletProvider: EvmWalletProvider,
+    args: z.infer<typeof BridgeTokenSchema>,
+  ): Promise<string> {
+    try {
+      // Use dynamic import to get the Across SDK
+      const acrossModule = await import("@across-protocol/app-sdk");
+      const createAcrossClient = acrossModule.createAcrossClient;
+
+      // Get recipient address if provided, otherwise use sender
+      const address = walletProvider.getAddress() as Hex;
+      const recipient = (args.recipient || address) as Hex;
+
+      // Get origin chain
+      const originChain = getChain(walletProvider.getNetwork().chainId as string);
+      if (!originChain) {
+        throw new Error(`Unsupported origin chain: ${walletProvider.getNetwork()}`);
+      }
+
+      // Get destination chain
+      const destinationNetworkId = CHAIN_ID_TO_NETWORK_ID[Number(args.destinationChainId)];
+      const destinationChain = NETWORK_ID_TO_VIEM_CHAIN[destinationNetworkId];
+      if (!destinationChain) {
+        throw new Error(`Unsupported destination chain: ${args.destinationChainId}`);
+      }
+
+      // Sanity checks
+      if (originChain.id === destinationChain.id) {
+        throw new Error("Origin and destination chains cannot be the same");
+      }
+      const useTestnet = isAcrossSupportedTestnet(originChain.id);
+      if (useTestnet !== isAcrossSupportedTestnet(destinationChain.id)) {
+        throw new Error(`Cross-chain transfers between ${originChain.name} and ${destinationChain.name} are not supported.
+           Origin and destination chains must either be both testnets or both mainnets.`);
+      }
+
+      // Create wallet client
+      const account = privateKeyToAccount(this.#privateKey as Hex);
+      if (account.address !== walletProvider.getAddress()) {
+        throw new Error("Private key does not match wallet provider address");
+      }
+      const walletClient = createWalletClient({
+        account,
+        chain: originChain,
+        transport: http(),
+      });
+
+      // Create Across client
+      const acrossClient = createAcrossClient({
+        chains: [originChain, destinationChain],
+        useTestnet,
+      });
+
+      // Get chain details to find token information
+      const chainDetails = await acrossClient.getSupportedChains({});
+      const originChainDetails = chainDetails.find(chain => chain.chainId === originChain.id);
+
+      if (!originChainDetails) {
+        throw new Error(`Origin chain ${originChain.id} not supported by Across Protocol`);
+      }
+
+      // Find token by symbol on the origin chain
+      const inputTokens = originChainDetails.inputTokens;
+      if (!inputTokens || inputTokens.length === 0) {
+        throw new Error(`No input tokens available on chain ${originChain.id}`);
+      }
+      const tokenInfo = inputTokens.find(
+        token => token.symbol.toUpperCase() === args.inputTokenSymbol.toUpperCase(),
+      );
+      if (!tokenInfo) {
+        throw new Error(
+          `Token ${args.inputTokenSymbol} not found on chain ${originChain.id}. Available tokens: ${inputTokens.map(t => t.symbol).join(", ")}`,
+        );
+      }
+
+      // Get token address and decimals to parse the amount
+      const inputToken = tokenInfo.address as Hex;
+      const decimals = tokenInfo.decimals;
+      const inputAmount = parseUnits(args.amount, decimals);
+
+      // Check balance
+      const isNative = args.inputTokenSymbol.toUpperCase() === "ETH";
+      if (isNative) {
+        // Check native ETH balance
+        const ethBalance = await walletProvider.getBalance();
+        if (ethBalance < inputAmount) {
+          throw new Error(
+            `Insufficient balance. Requested to bridge ${formatUnits(inputAmount, decimals)} ${args.inputTokenSymbol} but balance is only ${formatUnits(ethBalance, decimals)} ${args.inputTokenSymbol}`,
+          );
+        }
+      } else {
+        // Check ERC20 token balance
+        const tokenBalance = (await walletProvider.readContract({
+          address: inputToken,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [address],
+        })) as bigint;
+        if (tokenBalance < inputAmount) {
+          throw new Error(
+            `Insufficient balance. Requested to bridge ${formatUnits(inputAmount, decimals)} ${args.inputTokenSymbol} but balance is only ${formatUnits(tokenBalance, decimals)} ${args.inputTokenSymbol}`,
+          );
+        }
+      }
+
+      // Get available routes
+      const routeInfo = await acrossClient.getAvailableRoutes({
+        originChainId: originChain.id,
+        destinationChainId: destinationChain.id,
+        originToken: inputToken,
+      });
+
+      // Select the appropriate route for native ETH or ERC20 token
+      const route = routeInfo.find(route => route.isNative === isNative);
+      if (!route) {
+        throw new Error(
+          `No routes available from chain ${originChain.name} to chain ${destinationChain.name} for token ${args.inputTokenSymbol}`,
+        );
+      }
+
+      // Get quote
+      const quote = await acrossClient.getQuote({
+        route,
+        inputAmount,
+        recipient,
+      });
+
+      // Convert units to readable format
+      const formattedInfo = {
+        minDeposit: formatUnits(quote.limits.minDeposit, decimals),
+        maxDeposit: formatUnits(quote.limits.maxDeposit, decimals),
+        inputAmount: formatUnits(quote.deposit.inputAmount, decimals),
+        outputAmount: formatUnits(quote.deposit.outputAmount, decimals),
+      };
+
+      // Check if input amount is within valid deposit range
+      if (quote.deposit.inputAmount < quote.limits.minDeposit) {
+        throw new Error(
+          `Input amount ${formattedInfo.inputAmount} ${args.inputTokenSymbol} is below the minimum deposit of ${formattedInfo.minDeposit} ${args.inputTokenSymbol}`,
+        );
+      }
+      if (quote.deposit.inputAmount > quote.limits.maxDeposit) {
+        throw new Error(
+          `Input amount ${formattedInfo.inputAmount} ${args.inputTokenSymbol} exceeds the maximum deposit of ${formattedInfo.maxDeposit} ${args.inputTokenSymbol}`,
+        );
+      }
+
+      // Check if output amount is within acceptable slippage limits
+      const actualSlippagePercentage =
+        ((Number(formattedInfo.inputAmount) - Number(formattedInfo.outputAmount)) /
+          Number(formattedInfo.inputAmount)) *
+        100;
+      if (actualSlippagePercentage > args.maxSplippage) {
+        throw new Error(
+          `Output amount has high slippage of ${actualSlippagePercentage.toFixed(2)}%, which exceeds the maximum allowed slippage of ${args.maxSplippage}%. ` +
+            `Input: ${formattedInfo.inputAmount} ${args.inputTokenSymbol}, Output: ${formattedInfo.outputAmount} ${args.inputTokenSymbol}`,
+        );
+      }
+
+      //Approve ERC20 token if needed
+      let approvalTxHash;
+      if (!isNative) {
+        approvalTxHash = await walletProvider.sendTransaction({
+          to: inputToken,
+          data: encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "approve",
+            args: [quote.deposit.spokePoolAddress, quote.deposit.inputAmount],
+          }),
+        });
+        await walletProvider.waitForTransactionReceipt(approvalTxHash);
+      }
+
+      // Simulate the deposit transaction
+      const { request } = await acrossClient.simulateDepositTx({
+        walletClient: walletClient,
+        deposit: quote.deposit,
+      });
+
+      // Execute the deposit transaction
+      const transactionHash = await walletClient.writeContract(request);
+
+      // Wait for tx to be mined
+      const { depositId } = await acrossClient.waitForDepositTx({
+        transactionHash,
+        originChainId: originChain.id,
+      });
+
+      return `
+Successfully deposited tokens:
+- From: Chain ${originChain.id} (${originChain.name})
+- To: Chain ${destinationChain.id} (${destinationChain.name})
+- Token: ${args.inputTokenSymbol} (${inputToken})
+- Input Amount: ${formattedInfo.inputAmount} ${args.inputTokenSymbol}
+- Output Amount: ${formattedInfo.outputAmount} ${args.inputTokenSymbol}
+- Recipient: ${recipient}
+${!isNative ? `- Transaction Hash for approval: ${approvalTxHash}\n` : ""}
+- Transaction Hash for deposit: ${transactionHash}
+- Deposit ID: ${depositId}
+        `;
+    } catch (error) {
+      return `Error with Across SDK: ${error}`;
+    }
+  }
+
+  /**
+   * Checks the status of a bridge deposit via Across Protocol.
+   *
+   * @param walletProvider - The wallet provider to use for the transaction.
+   * @param args - The input arguments for the action.
+   * @returns A message containing the deposit status details.
+   */
+  @CreateAction({
+    name: "check_deposit_status",
+    description: `
+    This tool will check the status of a cross-chain bridge deposit on the Across Protocol.
+    
+    It takes the following inputs:
+    - originChainId: The chain ID of the origin chain (defaults to the current chain)
+    - depositId: The ID of the deposit to check (returned by the bridge deposit transaction)
+    `,
+    schema: CheckDepositStatusSchema,
+  })
+  async checkDepositStatus(
+    walletProvider: EvmWalletProvider,
+    args: z.infer<typeof CheckDepositStatusSchema>,
+  ): Promise<string> {
+    const originChainId = Number(args.originChainId) || Number(walletProvider.getNetwork().chainId);
+
+    if (isAcrossSupportedTestnet(originChainId)) {
+      throw new Error(
+        "Checking deposit status on testnets is currently not supported by the Across API",
+      );
+    }
+
+    try {
+      const response = await fetch(
+        `https://app.across.to/api/deposit/status?originChainId=${originChainId}&depositId=${args.depositId}`,
+        {
+          method: "GET",
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Across API request failed with status ${response.status}`);
+      }
+
+      const apiData = await response.json();
+
+      // Get chain names
+      const originChainName = getChain(String(apiData.originChainId))?.name || "Unknown Chain";
+      const destinationChainName =
+        getChain(String(apiData.destinationChainId))?.name || "Unknown Chain";
+
+      // Create structured response
+      const structuredResponse = {
+        status: apiData.status || "unknown",
+        depositTxInfo: apiData.depositTxHash
+          ? {
+              txHash: apiData.depositTxHash,
+              chainId: apiData.originChainId,
+              chainName: originChainName,
+            }
+          : null,
+        fillTxInfo: apiData.fillTx
+          ? {
+              txHash: apiData.fillTx,
+              chainId: apiData.destinationChainId,
+              chainName: destinationChainName,
+            }
+          : null,
+        depositRefundTxInfo: apiData.depositRefundTxHash
+          ? {
+              txHash: apiData.depositRefundTxHash,
+              chainId: apiData.originChainId,
+              chainName: originChainName,
+            }
+          : null,
+      };
+
+      return JSON.stringify(structuredResponse, null, 2);
+    } catch (error) {
+      return `Error checking deposit status: ${error}`;
+    }
+  }
+
+  /**
+   * Checks if the Across action provider supports the given network.
+   *
+   * @param network - The network to check.
+   * @returns True if the Across action provider supports the network, false otherwise.
+   */
+  supportsNetwork = (network: Network) => {
+    // Across only supports EVM-compatible chains
+    return network.protocolFamily === "evm";
+  };
+}
+
+export const acrossActionProvider = (config: AcrossActionProviderConfig) =>
+  new AcrossActionProvider(config);
+
+
+import { z } from "zod";
+import { parseUnits, Hex, createWalletClient, http, formatUnits, encodeFunctionData } from "viem";
+import { ActionProvider } from "../actionProvider";
+import { CHAIN_ID_TO_NETWORK_ID, Network, NETWORK_ID_TO_VIEM_CHAIN, getChain } from "../../network";
+import { CreateAction } from "../actionDecorator";
+import { BridgeTokenSchema, CheckDepositStatusSchema } from "./schemas";
+import { EvmWalletProvider } from "../../wallet-providers";
+import { isAcrossSupportedTestnet } from "./utils";
+import { privateKeyToAccount } from "viem/accounts";
+import { abi as ERC20_ABI } from "../erc20/constants";
+/**
+ * Configuration options for the SafeWalletProvider.
+ */
+export interface AcrossActionProviderConfig {
+  /**
+   * Private key of the wallet provider
+   */
+  privateKey: string;
+}
+
+/**
+ * AcrossActionProvider provides actions for cross-chain bridging via Across Protocol.
+ */
+export class AcrossActionProvider extends ActionProvider<EvmWalletProvider> {
+  #privateKey: string;
+  /**
+   * Constructor for the AcrossActionProvider.
+   *
+   * @param config - The configuration options for the AcrossActionProvider.
+   */
+  constructor(config: AcrossActionProviderConfig) {
+    super("across", []);
+    this.#privateKey = config.privateKey;
+    const account = privateKeyToAccount(this.#privateKey as Hex);
+    if (!account) throw new Error("Invalid private key");
+  }
+
+  /**
+   * Bridges a token from one chain to another using Across Protocol.
+   *
+   * @param walletProvider - The wallet provider to use for the transaction.
+   * @param args - The input arguments for the action.
+   * @returns A message containing the bridge details.
+   */
+  @CreateAction({
+    name: "bridge_token",
+    description: `
+    This tool will bridge tokens from the current chain to another chain using the Across Protocol.
+
+    It takes the following inputs:
+    - destinationChainId: The chain ID of the destination chain (e.g. 8453 for base-mainnet)
+    - inputTokenSymbol: The symbol of the token to bridge (e.g. 'ETH', 'USDC')
+    - amount: The amount of tokens to bridge in whole units (e.g. 1.5 WETH, 10 USDC)
+    - recipient: (Optional) The recipient address on the destination chain (defaults to sender)
+    - maxSplippage: (Optional) The maximum slippage percentage (defaults to 1.5%)
+
+    Important notes:
+    - Origin chain is the currently connected chain of the wallet provider 
+    - Supports cross-chain transfers between EVM-compatible chains for both mainnets and test networks
+    - Testnet deposits are not refunded if not filled on destination chain
+    - Ensure sufficient balance of the input token before bridging
+    - Returns deposit ID that can be used to check the status of the deposit
+    `,
+    schema: BridgeTokenSchema,
+  })
+  async bridgeToken(
+    walletProvider: EvmWalletProvider,
+    args: z.infer<typeof BridgeTokenSchema>,
+  ): Promise<string> {
+    try {
+      // Use dynamic import to get the Across SDK
+      const acrossModule = await import("@across-protocol/app-sdk");
+      const createAcrossClient = acrossModule.createAcrossClient;
+
+      // Get recipient address if provided, otherwise use sender
+      const address = walletProvider.getAddress() as Hex;
+      const recipient = (args.recipient || address) as Hex;
+
+      // Get origin chain
+      const originChain = getChain(walletProvider.getNetwork().chainId as string);
+      if (!originChain) {
+        throw new Error(`Unsupported origin chain: ${walletProvider.getNetwork()}`);
+      }
+
+      // Get destination chain
+      const destinationNetworkId = CHAIN_ID_TO_NETWORK_ID[Number(args.destinationChainId)];
+      const destinationChain = NETWORK_ID_TO_VIEM_CHAIN[destinationNetworkId];
+      if (!destinationChain) {
+        throw new Error(`Unsupported destination chain: ${args.destinationChainId}`);
+      }
+
+      // Sanity checks
+      if (originChain.id === destinationChain.id) {
+        throw new Error("Origin and destination chains cannot be the same");
+      }
+      const useTestnet = isAcrossSupportedTestnet(originChain.id);
+      if (useTestnet !== isAcrossSupportedTestnet(destinationChain.id)) {
+        throw new Error(`Cross-chain transfers between ${originChain.name} and ${destinationChain.name} are not supported.
+           Origin and destination chains must either be both testnets or both mainnets.`);
+      }
+
+      // Create wallet client
+      const account = privateKeyToAccount(this.#privateKey as Hex);
+      if (account.address !== walletProvider.getAddress()) {
+        throw new Error("Private key does not match wallet provider address");
+      }
+      const walletClient = createWalletClient({
+        account,
+        chain: originChain,
+        transport: http(),
+      });
+
+      // Create Across client
+      const acrossClient = createAcrossClient({
+        chains: [originChain, destinationChain],
+        useTestnet,
+      });
+
+      // Get chain details to find token information
+      const chainDetails = await acrossClient.getSupportedChains({});
+      const originChainDetails = chainDetails.find(chain => chain.chainId === originChain.id);
+
+      if (!originChainDetails) {
+        throw new Error(`Origin chain ${originChain.id} not supported by Across Protocol`);
+      }
+
+      // Find token by symbol on the origin chain
+      const inputTokens = originChainDetails.inputTokens;
+      if (!inputTokens || inputTokens.length === 0) {
+        throw new Error(`No input tokens available on chain ${originChain.id}`);
+      }
+      const tokenInfo = inputTokens.find(
+        token => token.symbol.toUpperCase() === args.inputTokenSymbol.toUpperCase(),
+      );
+      if (!tokenInfo) {
+        throw new Error(
+          `Token ${args.inputTokenSymbol} not found on chain ${originChain.id}. Available tokens: ${inputTokens.map(t => t.symbol).join(", ")}`,
+        );
+      }
+
+      // Get token address and decimals to parse the amount
+      const inputToken = tokenInfo.address as Hex;
+      const decimals = tokenInfo.decimals;
+      const inputAmount = parseUnits(args.amount, decimals);
+
+      // Check balance
+      const isNative = args.inputTokenSymbol.toUpperCase() === "ETH";
+      if (isNative) {
+        // Check native ETH balance
+        const ethBalance = await walletProvider.getBalance();
+        if (ethBalance < inputAmount) {
+          throw new Error(
+            `Insufficient balance. Requested to bridge ${formatUnits(inputAmount, decimals)} ${args.inputTokenSymbol} but balance is only ${formatUnits(ethBalance, decimals)} ${args.inputTokenSymbol}`,
+          );
+        }
+      } else {
+        // Check ERC20 token balance
+        const tokenBalance = (await walletProvider.readContract({
+          address: inputToken,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [address],
+        })) as bigint;
+        if (tokenBalance < inputAmount) {
+          throw new Error(
+            `Insufficient balance. Requested to bridge ${formatUnits(inputAmount, decimals)} ${args.inputTokenSymbol} but balance is only ${formatUnits(tokenBalance, decimals)} ${args.inputTokenSymbol}`,
+          );
+        }
+      }
+
+      // Get available routes
+      const routeInfo = await acrossClient.getAvailableRoutes({
+        originChainId: originChain.id,
+        destinationChainId: destinationChain.id,
+        originToken: inputToken,
+      });
+
+      // Select the appropriate route for native ETH or ERC20 token
+      const route = routeInfo.find(route => route.isNative === isNative);
+      if (!route) {
+        throw new Error(
+          `No routes available from chain ${originChain.name} to chain ${destinationChain.name} for token ${args.inputTokenSymbol}`,
+        );
+      }
+
+      // Get quote
+      const quote = await acrossClient.getQuote({
+        route,
+        inputAmount,
+        recipient,
+      });
+
+      // Convert units to readable format
+      const formattedInfo = {
+        minDeposit: formatUnits(quote.limits.minDeposit, decimals),
+        maxDeposit: formatUnits(quote.limits.maxDeposit, decimals),
+        inputAmount: formatUnits(quote.deposit.inputAmount, decimals),
+        outputAmount: formatUnits(quote.deposit.outputAmount, decimals),
+      };
+
+      // Check if input amount is within valid deposit range
+      if (quote.deposit.inputAmount < quote.limits.minDeposit) {
+        throw new Error(
+          `Input amount ${formattedInfo.inputAmount} ${args.inputTokenSymbol} is below the minimum deposit of ${formattedInfo.minDeposit} ${args.inputTokenSymbol}`,
+        );
+      }
+      if (quote.deposit.inputAmount > quote.limits.maxDeposit) {
+        throw new Error(
+          `Input amount ${formattedInfo.inputAmount} ${args.inputTokenSymbol} exceeds the maximum deposit of ${formattedInfo.maxDeposit} ${args.inputTokenSymbol}`,
+        );
+      }
+
+      // Check if output amount is within acceptable slippage limits
+      const actualSlippagePercentage =
+        ((Number(formattedInfo.inputAmount) - Number(formattedInfo.outputAmount)) /
+          Number(formattedInfo.inputAmount)) *
+        100;
+      if (actualSlippagePercentage > args.maxSplippage) {
+        throw new Error(
+          `Output amount has high slippage of ${actualSlippagePercentage.toFixed(2)}%, which exceeds the maximum allowed slippage of ${args.maxSplippage}%. ` +
+            `Input: ${formattedInfo.inputAmount} ${args.inputTokenSymbol}, Output: ${formattedInfo.outputAmount} ${args.inputTokenSymbol}`,
+        );
+      }
+
+      //Approve ERC20 token if needed
+      let approvalTxHash;
+      if (!isNative) {
+        approvalTxHash = await walletProvider.sendTransaction({
+          to: inputToken,
+          data: encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "approve",
+            args: [quote.deposit.spokePoolAddress, quote.deposit.inputAmount],
+          }),
+        });
+        await walletProvider.waitForTransactionReceipt(approvalTxHash);
+      }
+
+      // Simulate the deposit transaction
+      const { request } = await acrossClient.simulateDepositTx({
+        walletClient: walletClient,
+        deposit: quote.deposit,
+      });
+
+      // Execute the deposit transaction
+      const transactionHash = await walletClient.writeContract(request);
+
+      // Wait for tx to be mined
+      const { depositId } = await acrossClient.waitForDepositTx({
+        transactionHash,
+        originChainId: originChain.id,
+      });
+
+      return `
+Successfully deposited tokens:
+- From: Chain ${originChain.id} (${originChain.name})
+- To: Chain ${destinationChain.id} (${destinationChain.name})
+- Token: ${args.inputTokenSymbol} (${inputToken})
+- Input Amount: ${formattedInfo.inputAmount} ${args.inputTokenSymbol}
+- Output Amount: ${formattedInfo.outputAmount} ${args.inputTokenSymbol}
+- Recipient: ${recipient}
+${!isNative ? `- Transaction Hash for approval: ${approvalTxHash}\n` : ""}
+- Transaction Hash for deposit: ${transactionHash}
+- Deposit ID: ${depositId}
+        `;
+    } catch (error) {
+      return `Error with Across SDK: ${error}`;
+    }
+  }
+
+  /**
+   * Checks the status of a bridge deposit via Across Protocol.
+   *
+   * @param walletProvider - The wallet provider to use for the transaction.
+   * @param args - The input arguments for the action.
+   * @returns A message containing the deposit status details.
+   */
+  @CreateAction({
+    name: "check_deposit_status",
+    description: `
+    This tool will check the status of a cross-chain bridge deposit on the Across Protocol.
+    
+    It takes the following inputs:
+    - originChainId: The chain ID of the origin chain (defaults to the current chain)
+    - depositId: The ID of the deposit to check (returned by the bridge deposit transaction)
+    `,
+    schema: CheckDepositStatusSchema,
+  })
+  async checkDepositStatus(
+    walletProvider: EvmWalletProvider,
+    args: z.infer<typeof CheckDepositStatusSchema>,
+  ): Promise<string> {
+    const originChainId = Number(args.originChainId) || Number(walletProvider.getNetwork().chainId);
+
+    if (isAcrossSupportedTestnet(originChainId)) {
+      throw new Error(
+        "Checking deposit status on testnets is currently not supported by the Across API",
+      );
+    }
+
+    try {
+      const response = await fetch(
+        `https://app.across.to/api/deposit/status?originChainId=${originChainId}&depositId=${args.depositId}`,
+        {
+          method: "GET",
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Across API request failed with status ${response.status}`);
+      }
+
+      const apiData = await response.json();
+
+      // Get chain names
+      const originChainName = getChain(String(apiData.originChainId))?.name || "Unknown Chain";
+      const destinationChainName =
+        getChain(String(apiData.destinationChainId))?.name || "Unknown Chain";
+
+      // Create structured response
+      const structuredResponse = {
+        status: apiData.status || "unknown",
+        depositTxInfo: apiData.depositTxHash
+          ? {
+              txHash: apiData.depositTxHash,
+              chainId: apiData.originChainId,
+              chainName: originChainName,
+            }
+          : null,
+        fillTxInfo: apiData.fillTx
+          ? {
+              txHash: apiData.fillTx,
+              chainId: apiData.destinationChainId,
+              chainName: destinationChainName,
+            }
+          : null,
+        depositRefundTxInfo: apiData.depositRefundTxHash
+          ? {
+              txHash: apiData.depositRefundTxHash,
+              chainId: apiData.originChainId,
+              chainName: originChainName,
+            }
+          : null,
+      };
+
+      return JSON.stringify(structuredResponse, null, 2);
+    } catch (error) {
+      return `Error checking deposit status: ${error}`;
+    }
+  }
+
+  /**
+   * Checks if the Across action provider supports the given network.
+   *
+   * @param network - The network to check.
+   * @returns True if the Across action provider supports the network, false otherwise.
+   */
+  supportsNetwork = (network: Network) => {
+    // Across only supports EVM-compatible chains
+    return network.protocolFamily === "evm";
+  };
+}
+
+export const acrossActionProvider = (config: AcrossActionProviderConfig) =>
+  new AcrossActionProvider(config);
+
+
+/**
+ * Checks if a chain ID corresponds to a testnet network supported by Across
+ *
+ * @param chainId - The blockchain network chain ID
+ * @returns true if the chain ID corresponds to a testnet network supported by Across, false otherwise
+ */
+export function isAcrossSupportedTestnet(chainId: number): boolean {
+  // List of testnet chain IDs
+  const testnetChainIds = [
+    11155111, // Sepolia
+    84532, // Base Sepolia
+    421614, // Arbitrum Sepolia
+    11155420, // Optimism Sepolia
+    919, // Mode Sepolia
+    80002, // Polygon Amoy
+    168587773, // Blast Sepolia
+    4202, // Lisk Sepolia
+    37111, // Lens Sepolia
+    1301, // Unichain Sepolia
+  ];
+
+  return testnetChainIds.includes(chainId);
+}
+
+
+
+# CDP (Coinbase Developer Platform) Action Provider
+
+This directory contains the **CdpActionProvider** implementation, which provides actions to interact with the **Coinbase Developer Platform (CDP)** API and wallet services.
+
+## Directory Structure
+
+```
+cdp/
+├── cdpApiActionProvider.ts            # Provider for CDP API interactions
+├── cdpWalletActionProvider.ts         # Provider for CDP Wallet operations
+├── cdpApiActionProvider.test.ts       # Tests for CDP API provider
+├── cdpWalletActionProvider.test.ts    # Tests for CDP Wallet provider
+├── constants.ts                       # CDP contract constants and ABI
+├── schemas.ts                         # Action schemas for CDP operations
+├── index.ts                           # Main exports
+└── README.md                          # This file
+```
+
+## Actions
+
+### CDP API Actions
+
+- `address_reputation`: Returns onchain activity metrics
+
+- `request_faucet_funds`: Request testnet funds from CDP faucet
+
+  - Available only on Base Sepolia
+
+### CDP Wallet Actions
+
+- `deploy_contract`: Deploy a smart contract
+- `deploy_nft`: Deploy an NFT
+- `deploy_token`: Deploy a token
+- `trade`: Trade a token
+
+  - Available only on mainnet networks
+
+## Adding New Actions
+
+To add new CDP actions:
+
+1. Define your action schema in `schemas.ts`
+2. Implement the action in the appropriate provider file:
+   - CDP API actions in `cdpApiActionProvider.ts`
+   - CDP Wallet actions in `cdpWalletActionProvider.ts`
+3. Add corresponding tests
+
+## Network Support
+
+The CDP providers support all networks available on the Coinbase Developer Platform, including:
+
+- Base (Mainnet & Testnet)
+- Ethereum (Mainnet & Testnet)
+- Other EVM-compatible networks
+
+## Notes
+
+- Requires CDP API credentials (API Key ID and Secret). Visit the [CDP Portal](https://portal.cdp.coinbase.com/) to get your credentials.
+
+For more information on the **Coinbase Developer Platform**, visit [CDP Documentation](https://docs.cdp.coinbase.com/).
+
+
+import { EvmWalletProvider } from "../../wallet-providers";
+import { CdpApiActionProvider } from "./cdpApiActionProvider";
+import { AddressReputationSchema, RequestFaucetFundsSchema } from "./schemas";
+
+jest.mock("@coinbase/coinbase-sdk");
+
+const { ExternalAddress } = jest.requireMock("@coinbase/coinbase-sdk");
+
+describe("CDP API Action Provider Input Schemas", () => {
+  describe("Address Reputation Schema", () => {
+    it("should successfully parse valid input", () => {
+      const validInput = {
+        address: "0xe6b2af36b3bb8d47206a129ff11d5a2de2a63c83",
+        network: "base-mainnet",
+      };
+
+      const result = AddressReputationSchema.safeParse(validInput);
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(validInput);
+    });
+
+    it("should fail parsing invalid address", () => {
+      const invalidInput = {
+        address: "invalid-address",
+        network: "base-mainnet",
+      };
+      const result = AddressReputationSchema.safeParse(invalidInput);
+
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("Request Faucet Funds Schema", () => {
+    it("should successfully parse with optional assetId", () => {
+      const validInput = {
+        assetId: "eth",
+      };
+
+      const result = RequestFaucetFundsSchema.safeParse(validInput);
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(validInput);
+    });
+
+    it("should successfully parse without assetId", () => {
+      const validInput = {};
+      const result = RequestFaucetFundsSchema.safeParse(validInput);
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(validInput);
+    });
+  });
+});
+
+describe("CDP API Action Provider", () => {
+  let actionProvider: CdpApiActionProvider;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockExternalAddressInstance: jest.Mocked<any>;
+  let mockWallet: jest.Mocked<EvmWalletProvider>;
+
+  beforeEach(() => {
+    // Reset all mocks before each test
+    jest.clearAllMocks();
+
+    actionProvider = new CdpApiActionProvider();
+    mockExternalAddressInstance = {
+      reputation: jest.fn(),
+      faucet: jest.fn(),
+    };
+
+    // Mock the constructor to return our mock instance
+    (ExternalAddress as jest.Mock).mockImplementation(() => mockExternalAddressInstance);
+
+    mockWallet = {
+      deployToken: jest.fn(),
+      deployContract: jest.fn(),
+      getAddress: jest.fn().mockReturnValue("0xe6b2af36b3bb8d47206a129ff11d5a2de2a63c83"),
+      getNetwork: jest.fn().mockReturnValue({ networkId: "base-sepolia" }),
+    } as unknown as jest.Mocked<EvmWalletProvider>;
+  });
+
+  describe("addressReputation", () => {
+    it("should successfully check address reputation", async () => {
+      const args = {
+        address: "0xe6b2af36b3bb8d47206a129ff11d5a2de2a63c83",
+        network: "base-mainnet",
+      };
+
+      mockExternalAddressInstance.reputation.mockResolvedValue("Good reputation");
+
+      const result = await actionProvider.addressReputation(args);
+
+      expect(ExternalAddress).toHaveBeenCalledWith(args.network, args.address);
+      expect(ExternalAddress).toHaveBeenCalledTimes(1);
+      expect(mockExternalAddressInstance.reputation).toHaveBeenCalled();
+      expect(mockExternalAddressInstance.reputation).toHaveBeenCalledTimes(1);
+      expect(result).toBe("Good reputation");
+    });
+
+    it("should handle errors when checking reputation", async () => {
+      const args = {
+        address: "0xe6b2af36b3bb8d47206a129ff11d5a2de2a63c83",
+        network: "base-mainnet",
+      };
+
+      const error = new Error("Reputation check failed");
+      mockExternalAddressInstance.reputation.mockRejectedValue(error);
+
+      const result = await actionProvider.addressReputation(args);
+
+      expect(ExternalAddress).toHaveBeenCalledWith(args.network, args.address);
+      expect(ExternalAddress).toHaveBeenCalledTimes(1);
+      expect(mockExternalAddressInstance.reputation).toHaveBeenCalled();
+      expect(mockExternalAddressInstance.reputation).toHaveBeenCalledTimes(1);
+      expect(result).toBe(`Error checking address reputation: ${error}`);
+    });
+
+    it("should return error if not on Ethereum network", async () => {
+      const args = {
+        address: "0xe6b2af36b3bb8d47206a129ff11d5a2de2a63c83",
+        network: "solana-devnet",
+      };
+
+      const result = await actionProvider.addressReputation(args);
+
+      expect(result).toBe("Address reputation is only supported on Ethereum networks.");
+    });
+  });
+
+  describe("faucet", () => {
+    beforeEach(() => {
+      mockExternalAddressInstance.faucet.mockResolvedValue({
+        wait: jest.fn().mockResolvedValue({
+          getTransactionLink: jest.fn().mockReturnValue("tx-link"),
+        }),
+      });
+    });
+
+    it("should successfully request faucet funds with assetId", async () => {
+      const args = {
+        assetId: "eth",
+      };
+
+      const result = await actionProvider.faucet(mockWallet, args);
+
+      expect(ExternalAddress).toHaveBeenCalledWith("base-sepolia", mockWallet.getAddress());
+      expect(ExternalAddress).toHaveBeenCalledTimes(1);
+      expect(mockExternalAddressInstance.faucet).toHaveBeenCalledWith("eth");
+      expect(mockExternalAddressInstance.faucet).toHaveBeenCalledTimes(1);
+      expect(result).toContain("Received eth from the faucet");
+      expect(result).toContain("tx-link");
+    });
+
+    it("should successfully request faucet funds without assetId", async () => {
+      const args = {};
+
+      const result = await actionProvider.faucet(mockWallet, args);
+
+      expect(ExternalAddress).toHaveBeenCalledWith("base-sepolia", mockWallet.getAddress());
+      expect(ExternalAddress).toHaveBeenCalledTimes(1);
+      expect(mockExternalAddressInstance.faucet).toHaveBeenCalledWith(undefined);
+      expect(mockExternalAddressInstance.faucet).toHaveBeenCalledTimes(1);
+      expect(result).toContain("Received ETH from the faucet");
+    });
+
+    it("should handle faucet errors", async () => {
+      const args = {};
+      const error = new Error("Faucet request failed");
+      mockExternalAddressInstance.faucet.mockRejectedValue(error);
+
+      const result = await actionProvider.faucet(mockWallet, args);
+
+      expect(result).toBe(`Error requesting faucet funds: ${error}`);
+    });
+
+    it("should return error if not on base-sepolia or solana-devnet", async () => {
+      mockWallet.getNetwork.mockReturnValue({ networkId: "solana-mainnet", protocolFamily: "svm" });
+      const args = {};
+      const result = await actionProvider.faucet(mockWallet, args);
+
+      expect(result).toBe("Faucet is only allowed on 'base-sepolia' or 'solana-devnet'.");
+    });
+  });
+});
+
+
+import { version } from "../../../package.json";
+import { Coinbase, ExternalAddress } from "@coinbase/coinbase-sdk";
+import { z } from "zod";
+import { CreateAction } from "../actionDecorator";
+import { ActionProvider } from "../actionProvider";
+import { Network } from "../../network";
+import { CdpProviderConfig, WalletProvider } from "../../wallet-providers";
+import { AddressReputationSchema, RequestFaucetFundsSchema } from "./schemas";
+
+/**
+ * CdpApiActionProvider is an action provider for CDP API.
+ *
+ * This provider is used for any action that uses the CDP API, but does not require a CDP Wallet.
+ */
+export class CdpApiActionProvider extends ActionProvider<WalletProvider> {
+  /**
+   * Constructor for the CdpApiActionProvider class.
+   *
+   * @param config - The configuration options for the CdpApiActionProvider.
+   */
+  constructor(config: CdpProviderConfig = {}) {
+    super("cdp_api", []);
+
+    if (config.apiKeyId && config.apiKeySecret) {
+      Coinbase.configure({
+        apiKeyName: config.apiKeyId,
+        privateKey: config.apiKeySecret?.replace(/\\n/g, "\n"),
+        source: "agentkit",
+        sourceVersion: version,
+      });
+    } else {
+      Coinbase.configureFromJson({ source: "agentkit", sourceVersion: version });
+    }
+  }
+
+  /**
+   * Check the reputation of an address.
+   *
+   * @param args - The input arguments for the action
+   * @returns A string containing reputation data or error message
+   */
+  @CreateAction({
+    name: "address_reputation",
+    description: `
+This tool checks the reputation of an address on a given network. It takes:
+
+- network: The network to check the address on (e.g. "base-mainnet")
+- address: The Ethereum address to check
+`,
+    schema: AddressReputationSchema,
+  })
+  async addressReputation(args: z.infer<typeof AddressReputationSchema>): Promise<string> {
+    if (args.network.includes("solana")) {
+      return "Address reputation is only supported on Ethereum networks.";
+    }
+
+    try {
+      const address = new ExternalAddress(args.network, args.address);
+      const reputation = await address.reputation();
+      return reputation.toString();
+    } catch (error) {
+      return `Error checking address reputation: ${error}`;
+    }
+  }
+
+  /**
+   * Requests test tokens from the faucet for the default address in the wallet.
+   *
+   * @param walletProvider - The wallet provider to request funds from.
+   * @param args - The input arguments for the action.
+   * @returns A confirmation message with transaction details.
+   */
+  @CreateAction({
+    name: "request_faucet_funds",
+    description: `This tool will request test tokens from the faucet for the default address in the wallet. It takes the wallet and asset ID as input.
+Faucet is only allowed on 'base-sepolia' or 'solana-devnet'.
+If fauceting on 'base-sepolia', user can only provide asset ID 'eth' or 'usdc', if no asset ID is provided, the faucet will default to 'eth'.
+If fauceting on 'solana-devnet', user can only provide asset ID 'sol', if no asset ID is provided, the faucet will default to 'sol'.
+You are not allowed to faucet with any other network or asset ID. If you are on another network, suggest that the user sends you some ETH
+from another wallet and provide the user with your wallet details.`,
+    schema: RequestFaucetFundsSchema,
+  })
+  async faucet(
+    walletProvider: WalletProvider,
+    args: z.infer<typeof RequestFaucetFundsSchema>,
+  ): Promise<string> {
+    const network = walletProvider.getNetwork();
+
+    if (network.networkId !== "base-sepolia" && network.networkId !== "solana-devnet") {
+      return `Faucet is only allowed on 'base-sepolia' or 'solana-devnet'.`;
+    }
+
+    try {
+      const address = new ExternalAddress(
+        walletProvider.getNetwork().networkId!,
+        walletProvider.getAddress(),
+      );
+
+      const faucetTx = await address.faucet(args.assetId || undefined);
+
+      const result = await faucetTx.wait({ timeoutSeconds: 60 });
+
+      return `Received ${
+        args.assetId || "ETH"
+      } from the faucet. Transaction: ${result.getTransactionLink()}`;
+    } catch (error) {
+      return `Error requesting faucet funds: ${error}`;
+    }
+  }
+
+  /**
+   * Checks if the Cdp action provider supports the given network.
+   *
+   * NOTE: Network scoping is done at the action implementation level
+   *
+   * @param _ - The network to check.
+   * @returns True if the Cdp action provider supports the network, false otherwise.
+   */
+  supportsNetwork = (_: Network) => true;
+}
+
+export const cdpApiActionProvider = (config: CdpProviderConfig = {}) =>
+  new CdpApiActionProvider(config);
+
+
+import { CdpWalletProvider } from "../../wallet-providers";
+import { CdpWalletActionProvider } from "./cdpWalletActionProvider";
+import { DeployNftSchema, DeployTokenSchema, DeployContractSchema } from "./schemas";
+import { SmartContract, Trade } from "@coinbase/coinbase-sdk";
+
+// Mock the entire module
+jest.mock("@coinbase/coinbase-sdk");
+
+// Get the mocked constructor
+const { ExternalAddress } = jest.requireMock("@coinbase/coinbase-sdk");
+
+describe("CDP Wallet Action Provider Input Schemas", () => {
+  describe("Deploy NFT Schema", () => {
+    it("should successfully parse valid input", () => {
+      const validInput = {
+        baseURI: "https://www.test.xyz/metadata/",
+        name: "Test Token",
+        symbol: "TEST",
+      };
+
+      const result = DeployNftSchema.safeParse(validInput);
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(validInput);
+    });
+
+    it("should fail parsing empty input", () => {
+      const emptyInput = {};
+      const result = DeployNftSchema.safeParse(emptyInput);
+
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("Deploy Token Schema", () => {
+    it("should successfully parse valid input", () => {
+      const validInput = {
+        name: "Test Token",
+        symbol: "TEST",
+        totalSupply: 1000000000000000000n,
+      };
+
+      const result = DeployTokenSchema.safeParse(validInput);
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(validInput);
+    });
+  });
+
+  describe("Deploy Contract Schema", () => {
+    it("should successfully parse valid input", () => {
+      const validInput = {
+        solidityVersion: "0.8.0",
+        solidityInputJson: "{}",
+        contractName: "Test Contract",
+        constructorArgs: {},
+      };
+
+      const result = DeployContractSchema.safeParse(validInput);
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(validInput);
+    });
+
+    it("should fail parsing empty input", () => {
+      const emptyInput = {};
+      const result = DeployContractSchema.safeParse(emptyInput);
+
+      expect(result.success).toBe(false);
+    });
+  });
+});
+
+describe("CDP Wallet Action Provider", () => {
+  let actionProvider: CdpWalletActionProvider;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockExternalAddressInstance: jest.Mocked<any>;
+  let mockWallet: jest.Mocked<CdpWalletProvider>;
+
+  beforeEach(() => {
+    // Reset all mocks before each test
+    jest.clearAllMocks();
+
+    actionProvider = new CdpWalletActionProvider();
+    mockExternalAddressInstance = {
+      reputation: jest.fn(),
+      faucet: jest.fn(),
+    };
+
+    // Mock the constructor to return our mock instance
+    (ExternalAddress as jest.Mock).mockImplementation(() => mockExternalAddressInstance);
+
+    mockWallet = {
+      createTrade: jest.fn(),
+      deployToken: jest.fn(),
+      deployContract: jest.fn(),
+      getAddress: jest.fn().mockReturnValue("0xe6b2af36b3bb8d47206a129ff11d5a2de2a63c83"),
+      getNetwork: jest.fn().mockReturnValue({ networkId: "base-sepolia" }),
+    } as unknown as jest.Mocked<CdpWalletProvider>;
+  });
+
+  describe("deployNft", () => {
+    let mockWallet: jest.Mocked<CdpWalletProvider>;
+    const MOCK_NFT_BASE_URI = "https://www.test.xyz/metadata/";
+    const MOCK_NFT_NAME = "Test Token";
+    const MOCK_NFT_SYMBOL = "TEST";
+    const CONTRACT_ADDRESS = "0x123456789abcdef";
+    const NETWORK_ID = "base-sepolia";
+    const TRANSACTION_HASH = "0xghijkl987654321";
+    const TRANSACTION_LINK = `https://etherscan.io/tx/${TRANSACTION_HASH}`;
+
+    beforeEach(() => {
+      mockWallet = {
+        deployNFT: jest.fn().mockResolvedValue({
+          wait: jest.fn().mockResolvedValue({
+            getContractAddress: jest.fn().mockReturnValue(CONTRACT_ADDRESS),
+            getTransaction: jest.fn().mockReturnValue({
+              getTransactionHash: jest.fn().mockReturnValue(TRANSACTION_HASH),
+              getTransactionLink: jest.fn().mockReturnValue(TRANSACTION_LINK),
+            }),
+          }),
+        }),
+        getNetwork: jest.fn().mockReturnValue({ networkId: NETWORK_ID }),
+      } as unknown as jest.Mocked<CdpWalletProvider>;
+    });
+
+    it("should successfully deploy an NFT", async () => {
+      const args = {
+        name: MOCK_NFT_NAME,
+        symbol: MOCK_NFT_SYMBOL,
+        baseURI: MOCK_NFT_BASE_URI,
+      };
+
+      const result = await actionProvider.deployNFT(mockWallet, args);
+
+      expect(mockWallet.deployNFT).toHaveBeenCalledWith(args);
+      expect(result).toContain(`Deployed NFT Collection ${MOCK_NFT_NAME}:`);
+      expect(result).toContain(`- to address ${CONTRACT_ADDRESS}`);
+      expect(result).toContain(`- on network ${NETWORK_ID}`);
+      expect(result).toContain(`Transaction hash: ${TRANSACTION_HASH}`);
+      expect(result).toContain(`Transaction link: ${TRANSACTION_LINK}`);
+    });
+
+    it("should handle deployment errors", async () => {
+      const args = {
+        name: MOCK_NFT_NAME,
+        symbol: MOCK_NFT_SYMBOL,
+        baseURI: MOCK_NFT_BASE_URI,
+      };
+
+      const error = new Error("An error has occurred");
+      mockWallet.deployNFT.mockRejectedValue(error);
+
+      const result = await actionProvider.deployNFT(mockWallet, args);
+
+      expect(mockWallet.deployNFT).toHaveBeenCalledWith(args);
+      expect(result).toBe(`Error deploying NFT: ${error}`);
+    });
+  });
+
+  describe("deployToken", () => {
+    beforeEach(() => {
+      mockWallet = {
+        deployToken: jest.fn().mockResolvedValue({
+          wait: jest.fn().mockResolvedValue({
+            getContractAddress: jest.fn().mockReturnValue("0x123"),
+            getTransaction: jest.fn().mockReturnValue({
+              getTransactionLink: jest.fn().mockReturnValue("tx-link"),
+            }),
+          }),
+        }),
+      } as unknown as jest.Mocked<CdpWalletProvider>;
+    });
+
+    it("should successfully deploy a token", async () => {
+      const args = {
+        name: "Test Token",
+        symbol: "TEST",
+        totalSupply: 1000000000000000000n,
+      };
+
+      const result = await actionProvider.deployToken(mockWallet, args);
+
+      expect(mockWallet.deployToken).toHaveBeenCalledWith(args);
+      expect(mockWallet.deployToken).toHaveBeenCalledTimes(1);
+      expect(result).toContain(
+        "Deployed ERC20 token contract Test Token (TEST) with total supply of 1000000000000000000 tokens at address 0x123. Transaction link: tx-link",
+      );
+    });
+
+    it("should handle errors when deploying a token", async () => {
+      const args = {
+        name: "Test Token",
+        symbol: "TEST",
+        totalSupply: 1000000000000000000n,
+      };
+
+      const error = new Error("Token deployment failed");
+      mockWallet.deployToken.mockRejectedValue(error);
+
+      const result = await actionProvider.deployToken(mockWallet, args);
+
+      expect(result).toBe(`Error deploying token: ${error}`);
+    });
+  });
+
+  describe("deployContract", () => {
+    const CONTRACT_ADDRESS = "0x123456789abcdef";
+    const TRANSACTION_LINK = "https://etherscan.io/tx/0xghijkl987654321";
+    const MOCK_CONTRACT_NAME = "Test Contract";
+    const MOCK_SOLIDITY_VERSION = "0.8.0";
+    const MOCK_SOLIDITY_INPUT_JSON = "{}";
+    const MOCK_CONSTRUCTOR_ARGS = { arg1: "value1", arg2: "value2" };
+
+    beforeEach(() => {
+      mockWallet.deployContract.mockResolvedValue({
+        wait: jest.fn().mockResolvedValue({
+          getContractAddress: jest.fn().mockReturnValue(CONTRACT_ADDRESS),
+          getTransaction: jest.fn().mockReturnValue({
+            getTransactionLink: jest.fn().mockReturnValue(TRANSACTION_LINK),
+          }),
+        }),
+      } as unknown as SmartContract);
+    });
+
+    it("should successfully deploy a contract", async () => {
+      const args = {
+        solidityVersion: MOCK_SOLIDITY_VERSION,
+        solidityInputJson: MOCK_SOLIDITY_INPUT_JSON,
+        contractName: MOCK_CONTRACT_NAME,
+        constructorArgs: MOCK_CONSTRUCTOR_ARGS,
+      };
+
+      const response = await actionProvider.deployContract(mockWallet, args);
+
+      expect(mockWallet.deployContract).toHaveBeenCalledWith({
+        solidityVersion: "0.8.0+commit.c7dfd78e",
+        solidityInputJson: MOCK_SOLIDITY_INPUT_JSON,
+        contractName: MOCK_CONTRACT_NAME,
+        constructorArgs: MOCK_CONSTRUCTOR_ARGS,
+      });
+      expect(response).toContain(
+        `Deployed contract ${MOCK_CONTRACT_NAME} at address ${CONTRACT_ADDRESS}`,
+      );
+      expect(response).toContain(`Transaction link: ${TRANSACTION_LINK}`);
+    });
+
+    it("should handle deployment errors", async () => {
+      const args = {
+        solidityVersion: MOCK_SOLIDITY_VERSION,
+        solidityInputJson: MOCK_SOLIDITY_INPUT_JSON,
+        contractName: MOCK_CONTRACT_NAME,
+        constructorArgs: MOCK_CONSTRUCTOR_ARGS,
+      };
+
+      const error = new Error("An error has occurred");
+      mockWallet.deployContract.mockRejectedValue(error);
+
+      const response = await actionProvider.deployContract(mockWallet, args);
+
+      expect(mockWallet.deployContract).toHaveBeenCalledWith({
+        solidityVersion: "0.8.0+commit.c7dfd78e",
+        solidityInputJson: MOCK_SOLIDITY_INPUT_JSON,
+        contractName: MOCK_CONTRACT_NAME,
+        constructorArgs: MOCK_CONSTRUCTOR_ARGS,
+      });
+      expect(response).toBe(`Error deploying contract: ${error}`);
+    });
+  });
+
+  describe("trade", () => {
+    const TRANSACTION_HASH = "0xghijkl987654321";
+    const TRANSACTION_LINK = "https://etherscan.io/tx/0xghijkl987654321";
+    const TO_AMOUNT = "100";
+
+    beforeEach(() => {
+      mockWallet.createTrade.mockResolvedValue({
+        wait: jest.fn().mockResolvedValue({
+          getTransaction: jest.fn().mockReturnValue({
+            getTransactionHash: jest.fn().mockReturnValue(TRANSACTION_HASH),
+            getTransactionLink: jest.fn().mockReturnValue(TRANSACTION_LINK),
+          }),
+          getToAmount: jest.fn().mockReturnValue(TO_AMOUNT),
+        }),
+      } as unknown as Trade);
+    });
+
+    it("should successfully trade assets", async () => {
+      const args = {
+        amount: 1n,
+        fromAssetId: "eth",
+        toAssetId: "usdc",
+      };
+
+      const result = await actionProvider.trade(mockWallet, args);
+
+      expect(mockWallet.createTrade).toHaveBeenCalledWith(args);
+      expect(result).toContain(
+        `Traded ${args.amount} of ${args.fromAssetId} for ${TO_AMOUNT} of ${args.toAssetId}`,
+      );
+      expect(result).toContain(`Transaction hash for the trade: ${TRANSACTION_HASH}`);
+      expect(result).toContain(`Transaction link for the trade: ${TRANSACTION_LINK}`);
+    });
+
+    it("should handle trade errors", async () => {
+      const args = {
+        amount: 1000000000000000000n,
+        fromAssetId: "eth",
+        toAssetId: "usdc",
+      };
+
+      const error = new Error("An error has occurred");
+      mockWallet.createTrade.mockRejectedValue(error);
+
+      const result = await actionProvider.trade(mockWallet, args);
+
+      expect(result).toBe(`Error trading assets: ${error}`);
+    });
+  });
+
+  describe("supportsNetwork", () => {
+    it("should return true when protocolFamily is evm", () => {
+      expect(actionProvider.supportsNetwork({ protocolFamily: "evm" })).toBe(true);
+    });
+
+    it("should return false when protocolFamily is not evm", () => {
+      expect(actionProvider.supportsNetwork({ protocolFamily: "solana" })).toBe(false);
+    });
+  });
+});
+
+
+import { Coinbase } from "@coinbase/coinbase-sdk";
+import { z } from "zod";
+import { version } from "../../../package.json";
+import { CreateAction } from "../actionDecorator";
+import { ActionProvider } from "../actionProvider";
+import { Network } from "../../network";
+import { CdpWalletProvider, CdpProviderConfig } from "../../wallet-providers";
+import { SolidityVersions } from "./constants";
+import { DeployContractSchema, DeployNftSchema, DeployTokenSchema, TradeSchema } from "./schemas";
+
+/**
+ * CdpWalletActionProvider is an action provider for Cdp.
+ *
+ * This provider is used for any action that requires a CDP Wallet.
+ */
+export class CdpWalletActionProvider extends ActionProvider<CdpWalletProvider> {
+  /**
+   * Constructor for the CdpWalletActionProvider class.
+   *
+   * @param config - The configuration options for the CdpWalletActionProvider.
+   */
+  constructor(config: CdpProviderConfig = {}) {
+    super("cdp_wallet", []);
+
+    if (config.apiKeyId && config.apiKeySecret) {
+      Coinbase.configure({
+        apiKeyName: config.apiKeyId,
+        privateKey: config.apiKeySecret?.replace(/\\n/g, "\n"),
+        source: "agentkit",
+        sourceVersion: version,
+      });
+    } else {
+      Coinbase.configureFromJson({ source: "agentkit", sourceVersion: version });
+    }
+  }
+
+  /**
+   * Deploys a contract.
+   *
+   * @param walletProvider - The wallet provider to deploy the contract from
+   * @param args - The input arguments for the action
+   * @returns A message containing the deployed contract address and details
+   */
+  @CreateAction({
+    name: "deploy_contract",
+    description: `
+Deploys smart contract with required args: solidity version (string), solidity input json (string), contract name (string), and optional constructor args (Dict[str, Any])
+
+Input json structure:
+{"language":"Solidity","settings":{"remappings":[],"outputSelection":{"*":{"*":["abi","evm.bytecode"]}}},"sources":{}}
+
+You must set the outputSelection to {"*":{"*":["abi","evm.bytecode"]}} in the settings. The solidity version must be >= 0.8.0 and <= 0.8.28.
+
+Sources should contain one or more contracts with the following structure:
+{"contract_name.sol":{"content":"contract code"}}
+
+The contract code should be escaped. Contracts cannot import from external contracts but can import from one another.
+
+Constructor args are required if the contract has a constructor. They are a key-value
+map where the key is the arg name and the value is the arg value. Encode uint/int/bytes/string/address values as strings, boolean values as true/false. For arrays/tuples, encode based on contained type.`,
+    schema: DeployContractSchema,
+  })
+  async deployContract(
+    walletProvider: CdpWalletProvider,
+    args: z.infer<typeof DeployContractSchema>,
+  ): Promise<string> {
+    try {
+      const solidityVersion = SolidityVersions[args.solidityVersion];
+
+      const contract = await walletProvider.deployContract({
+        solidityVersion: solidityVersion,
+        solidityInputJson: args.solidityInputJson,
+        contractName: args.contractName,
+        constructorArgs: args.constructorArgs ?? {},
+      });
+
+      const result = await contract.wait();
+
+      return `Deployed contract ${args.contractName} at address ${result.getContractAddress()}. Transaction link: ${result
+        .getTransaction()!
+        .getTransactionLink()}`;
+    } catch (error) {
+      return `Error deploying contract: ${error}`;
+    }
+  }
+
+  /**
+   * Deploys an NFT (ERC-721) token collection onchain from the wallet.
+   *
+   * @param walletProvider - The wallet provider to deploy the NFT from.
+   * @param args - The input arguments for the action.
+   * @returns A message containing the NFT token deployment details.
+   */
+  @CreateAction({
+    name: "deploy_nft",
+    description: `This tool will deploy an NFT (ERC-721) contract onchain from the wallet. 
+  It takes the name of the NFT collection, the symbol of the NFT collection, and the base URI for the token metadata as inputs.`,
+    schema: DeployNftSchema,
+  })
+  async deployNFT(
+    walletProvider: CdpWalletProvider,
+    args: z.infer<typeof DeployNftSchema>,
+  ): Promise<string> {
+    try {
+      const nftContract = await walletProvider.deployNFT({
+        name: args.name,
+        symbol: args.symbol,
+        baseURI: args.baseURI,
+      });
+
+      const result = await nftContract.wait();
+
+      const transaction = result.getTransaction()!;
+      const networkId = walletProvider.getNetwork().networkId;
+      const contractAddress = result.getContractAddress();
+
+      return [
+        `Deployed NFT Collection ${args.name}:`,
+        `- to address ${contractAddress}`,
+        `- on network ${networkId}.`,
+        `Transaction hash: ${transaction.getTransactionHash()}`,
+        `Transaction link: ${transaction.getTransactionLink()}`,
+      ].join("\n");
+    } catch (error) {
+      return `Error deploying NFT: ${error}`;
+    }
+  }
+
+  /**
+   * Deploys a token.
+   *
+   * @param walletProvider - The wallet provider to deploy the token.
+   * @param args - The arguments for the token deployment.
+   * @returns The deployed token.
+   */
+  @CreateAction({
+    name: "deploy_token",
+    description: `This tool will deploy an ERC20 token smart contract. It takes the token name, symbol, and total supply as input. 
+The token will be deployed using the wallet's default address as the owner and initial token holder.`,
+    schema: DeployTokenSchema,
+  })
+  async deployToken(walletProvider: CdpWalletProvider, args: z.infer<typeof DeployTokenSchema>) {
+    try {
+      const tokenContract = await walletProvider.deployToken({
+        name: args.name,
+        symbol: args.symbol,
+        totalSupply: args.totalSupply,
+      });
+
+      const result = await tokenContract.wait();
+
+      return `Deployed ERC20 token contract ${args.name} (${args.symbol}) with total supply of ${
+        args.totalSupply
+      } tokens at address ${result.getContractAddress()}. Transaction link: ${result
+        .getTransaction()!
+        .getTransactionLink()}`;
+    } catch (error) {
+      return `Error deploying token: ${error}`;
+    }
+  }
+
+  /**
+   * Trades a specified amount of a from asset to a to asset for the wallet.
+   *
+   * @param walletProvider - The wallet provider to trade the asset from.
+   * @param args - The input arguments for the action.
+   * @returns A message containing the trade details.
+   */
+  @CreateAction({
+    name: "trade",
+    description: `This tool will trade a specified amount of a 'from asset' to a 'to asset' for the wallet.
+It takes the following inputs:
+- The amount of the 'from asset' to trade
+- The from asset ID to trade 
+- The asset ID to receive from the trade
+
+Important notes:
+- Trades are only supported on mainnet networks (ie, 'base-mainnet', 'base', 'ethereum-mainnet', 'ethereum', etc.)
+- Never allow trades on any non-mainnet network (ie, 'base-sepolia', 'ethereum-sepolia', etc.)
+- When selling a native asset (e.g. 'eth' on base-mainnet), ensure there is sufficient balance to pay for the trade AND the gas cost of this trade`,
+    schema: TradeSchema,
+  })
+  async trade(
+    walletProvider: CdpWalletProvider,
+    args: z.infer<typeof TradeSchema>,
+  ): Promise<string> {
+    try {
+      const tradeResult = await walletProvider.createTrade({
+        amount: args.amount,
+        fromAssetId: args.fromAssetId,
+        toAssetId: args.toAssetId,
+      });
+
+      const result = await tradeResult.wait();
+
+      return `Traded ${args.amount} of ${args.fromAssetId} for ${result.getToAmount()} of ${
+        args.toAssetId
+      }.\nTransaction hash for the trade: ${result
+        .getTransaction()
+        .getTransactionHash()}\nTransaction link for the trade: ${result
+        .getTransaction()
+        .getTransactionLink()}`;
+    } catch (error) {
+      return `Error trading assets: ${error}`;
+    }
+  }
+
+  /**
+   * Checks if the Cdp action provider supports the given network.
+   *
+   * @param network - The network to check.
+   * @returns True if the Cdp action provider supports the network, false otherwise.
+   */
+  supportsNetwork = (network: Network) => network.protocolFamily === "evm";
+}
+
+export const cdpWalletActionProvider = (config: CdpProviderConfig = {}) =>
+  new CdpWalletActionProvider(config);
+
+
+export const SolidityVersions = {
+  "0.8.28": "0.8.28+commit.7893614a",
+  "0.8.27": "0.8.27+commit.40a35a09",
+  "0.8.26": "0.8.26+commit.8a97fa7a",
+  "0.8.25": "0.8.25+commit.b61c2a91",
+  "0.8.24": "0.8.24+commit.e11b9ed9",
+  "0.8.23": "0.8.23+commit.f704f362",
+  "0.8.22": "0.8.22+commit.4fc1097e",
+  "0.8.21": "0.8.21+commit.d9974bed",
+  "0.8.20": "0.8.20+commit.a1b79de6",
+  "0.8.19": "0.8.19+commit.7dd6d404",
+  "0.8.18": "0.8.18+commit.87f61d96",
+  "0.8.17": "0.8.17+commit.8df45f5f",
+  "0.8.16": "0.8.16+commit.07a7930e",
+  "0.8.15": "0.8.15+commit.e14f2714",
+  "0.8.14": "0.8.14+commit.80d49f37",
+  "0.8.13": "0.8.13+commit.abaa5c0e",
+  "0.8.12": "0.8.12+commit.f00d7308",
+  "0.8.11": "0.8.11+commit.d7f03943",
+  "0.8.10": "0.8.10+commit.fc410830",
+  "0.8.9": "0.8.9+commit.e5eed63a",
+  "0.8.8": "0.8.8+commit.dddeac2f",
+  "0.8.7": "0.8.7+commit.e28d00a7",
+  "0.8.6": "0.8.6+commit.11564f7e",
+  "0.8.5": "0.8.5+commit.a4f2e591",
+  "0.8.4": "0.8.4+commit.c7e474f2",
+  "0.8.3": "0.8.3+commit.8d00100c",
+  "0.8.2": "0.8.2+commit.661d1103",
+  "0.8.1": "0.8.1+commit.df193b15",
+  "0.8.0": "0.8.0+commit.c7dfd78e",
+} as const;
+
+
+import { z } from "zod";
+import { SolidityVersions } from "./constants";
+
+/**
+ * Input schema for address reputation check.
+ */
+export const AddressReputationSchema = z
+  .object({
+    address: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/, "Invalid Ethereum address format")
+      .describe("The Ethereum address to check"),
+    network: z.string().describe("The network to check the address on"),
+  })
+  .strip()
+  .describe("Input schema for address reputation check");
+
+/**
+ * Input schema for deploy contract action.
+ */
+export const DeployContractSchema = z
+  .object({
+    solidityVersion: z
+      .enum(Object.keys(SolidityVersions) as [string, ...string[]])
+      .describe("The solidity compiler version"),
+    solidityInputJson: z.string().describe("The input json for the solidity compiler"),
+    contractName: z.string().describe("The name of the contract class to be deployed"),
+    constructorArgs: z
+      .record(z.string(), z.any())
+      .describe("The constructor arguments for the contract")
+      .optional(),
+  })
+  .strip()
+  .describe("Instructions for deploying an arbitrary contract");
+
+/**
+ * Input schema for deploy NFT action
+ */
+export const DeployNftSchema = z
+  .object({
+    name: z.string().describe("The name of the NFT collection"),
+    symbol: z.string().describe("The symbol of the NFT collection"),
+    baseURI: z.string().describe("The base URI for the token metadata"),
+  })
+  .strip()
+  .describe("Instructions for deploying an NFT collection");
+
+/**
+ * Input schema for deploy token action.
+ */
+export const DeployTokenSchema = z
+  .object({
+    name: z.string().describe("The name of the token"),
+    symbol: z.string().describe("The token symbol"),
+    totalSupply: z.custom<bigint>().describe("The total supply of tokens to mint"),
+  })
+  .strip()
+  .describe("Instructions for deploying a token");
+
+/**
+ * Input schema for request faucet funds action.
+ */
+export const RequestFaucetFundsSchema = z
+  .object({
+    assetId: z.string().optional().describe("The optional asset ID to request from faucet"),
+  })
+  .strip()
+  .describe("Instructions for requesting faucet funds");
+
+/**
+ * Input schema for trade action.
+ */
+export const TradeSchema = z
+  .object({
+    amount: z.custom<bigint>().describe("The amount of the from asset to trade"),
+    fromAssetId: z.string().describe("The from asset ID to trade"),
+    toAssetId: z.string().describe("The to asset ID to receive from the trade"),
+  })
+  .strip()
+  .describe("Instructions for trading assets");
